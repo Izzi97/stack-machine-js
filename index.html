@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="icon"
+      type="image"
+      href="https://cdn.sanity.io/images/599r6htc/regionalized/2d98f37b14bfabde217cd89b38dd0b3481c5ef7f-1108x1108.png?w=60&q=70&fit=max&auto=format"
+    />
+    <title>Stack Machine</title>
+    <style>
+      :root {
+        --column-width: 10rem;
+        --padding: 0.5rem;
+        --thought-margin: 0.5rem;
+        --thought-padding: 0.5rem;
+      }
+      * {
+        font-size: large;
+      }
+      html,
+      body,
+      main {
+        margin: 0;
+        height: 100vh;
+      }
+      main {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-template-rows: auto 10rem;
+      }
+      #stack,
+      #memory {
+        grid-row: span 2;
+      }
+      main > section {
+        padding: var(--padding);
+      }
+      div.thought {
+        display: none;
+      }
+      div.thought.show {
+        display: block;
+        position: absolute;
+        margin: var(--thought-margin) ß;
+        padding: var(--thought-padding);
+        text-align: center;
+        background-color: rgb(63, 165, 20);
+        opacity: 0.9;
+        font-family: "Comic Sans MS", "Comic Sans", cursive;
+        color: white;
+      }
+      #program {
+        margin: 0;
+        display: grid;
+        grid-template-columns: 1rem 3rem auto;
+        grid-template-rows: repeat(auto-fill, 1.5rem);
+        gap: 0.5rem;
+        overflow-y: scroll;
+      }
+      #program > .comment {
+        font-style: italic;
+        overflow: scroll;
+      }
+      #menu legend {
+        font-family: sans-serif;
+      }
+      #stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        overflow-y: scroll;
+      }
+      #stack > div.stack-element {
+        text-align: center;
+        font-family: monospace;
+        background-color: lightblue;
+      }
+      #memory {
+        overflow-y: scroll;
+      }
+      #memory > table {
+        width: 100%;
+      }
+      #memory > table > tr > td {
+        height: 1.5rem;
+        text-align: center;
+        font-family: monospace;
+        outline: 1px solid black;
+      }
+      #editor > form {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem;
+      }
+      #editor > form > textarea {
+        grid-column: 1 / span 2;
+        min-width: 30rem;
+        min-height: 20rem;
+      }
+    </style>
+    <script type="module" src="./stack-machine.js"></script>
+    <script type="module" src="./assembly.js"></script>
+    <script type="module">
+      import StackMachine from "./stack-machine.js";
+      import Assembly from "./assembly.js";
+
+      window.onerror = (event) => {
+        alert(`0.o\n  ‾‾\n\n${event}`);
+      };
+
+      class Controller {
+        #program;
+        #parseTree;
+        #instructions;
+        #stackMachine = new StackMachine();
+        #executionTerminated = false;
+
+        #programContainer = document.querySelector("#program");
+        #executionLineNumber = 0;
+        #runIntervalId = null;
+
+        #menuView = document.getElementById("menu");
+        #editButton = document.getElementById("edit");
+        #nextButton = document.getElementById("next");
+        #runStopButton = document.getElementById("run");
+        #resetButton = document.getElementById("reset");
+
+        #editorView = document.getElementById("editor");
+
+        #stackView = document.getElementById("stack");
+        #memoryTable = document.querySelector("#memory > table");
+
+        constructor(initialProgram) {
+          this.#program = this.#unindentProgram(initialProgram);
+
+          this.#renderEmptyStack();
+          this.#renderEmptyMemory();
+
+          this.#editButton.addEventListener("click", this.#edit.bind(this));
+          this.#nextButton.addEventListener("click", this.#next.bind(this));
+          this.#runStopButton.onclick = this.#run.bind(this);
+          this.#resetButton.addEventListener("click", this.#reset.bind(this));
+
+          // this may fail, do program-validity-invariant setup before
+          this.#parseTree = Assembly.parseProgram(this.#program);
+          this.#instructions = Assembly.generateInstructions(this.#parseTree);
+          this.#stackMachine.load(this.#instructions);
+          this.#renderProgram();
+          this.#renderInstructionsIntoMemory();
+        }
+
+        #unindentProgram(program) {
+          return program
+            .split("\n")
+            .filter((line) => line !== undefined && line !== "")
+            .map((line) => line.trim())
+            .join("\n");
+        }
+
+        #renderEmptyStack() {
+          this.#stackView.innerHTML = "";
+        }
+
+        #renderEmptyMemory() {
+          this.#memoryTable.innerHTML = "";
+
+          const rows = new Array(StackMachine.memorySize)
+            .fill("0")
+            .map((zero) => {
+              const td = document.createElement("td");
+              td.innerText = zero;
+              const tr = document.createElement("tr");
+              tr.append(td);
+              return tr;
+            });
+
+          this.#memoryTable.append(...rows);
+        }
+
+        #edit() {
+          const editorTextarea =
+            this.#editorView.querySelector("form > textarea");
+          const cancelButton = this.#editorView.querySelector(
+            "form > button.cancel"
+          );
+          const submitButton = this.#editorView.querySelector(
+            "form > button.submit"
+          );
+
+          editorTextarea.value = this.#program;
+          cancelButton.onclick = () => this.#editorView.close();
+          submitButton.onclick = (e) => {
+            e.preventDefault();
+
+            const program = editorTextarea.value;
+
+            try {
+              // these two calls may throw on syntax error
+              this.#parseTree = Assembly.parseProgram(program);
+              this.#instructions = Assembly.generateInstructions(
+                this.#parseTree
+              );
+              this.#program = program;
+
+              this.#reset();
+
+              this.#editorView.close();
+            } catch (syntaxError) {
+              alert(`syntax error while parsing the program: ${syntaxError}`);
+            }
+          };
+
+          this.#editorView.showModal();
+        }
+
+        #next() {
+          const {
+            success,
+            error,
+            opName,
+            opCode,
+            halt,
+            numStackValuesPopped,
+            stackValuesPushed,
+            memoryAddressWritten,
+            memoryValueWritten,
+            instructionPointerDiff,
+          } = this.#stackMachine.execute();
+
+          if (this.#executionTerminated) return;
+
+          if (!success) {
+            this.#executionTerminated = true;
+            alert(`execution error: ${error}`);
+            return;
+          }
+
+          if (halt) {
+            this.#executionTerminated = true;
+            alert("execution terminated");
+            return;
+          }
+
+          if (numStackValuesPopped > 0) {
+            if (numStackValuesPopped > this.#stackView.childElementCount)
+              throw new RangeError(
+                `stack view was requested to remove ${numStackValuesPopped} children but it has only ${
+                  this.#stackView.childElementCount
+                } - this should not happen`
+              );
+
+            for (let i = 0; i < numStackValuesPopped; i++) {
+              this.#stackView.lastChild.remove();
+            }
+          }
+
+          if (stackValuesPushed.length > 0) {
+            for (const value of stackValuesPushed) {
+              const div = document.createElement("div");
+              div.classList.add("stack-element");
+              div.innerText = value.toString();
+              this.#stackView.append(div);
+            }
+          }
+
+          if (
+            memoryAddressWritten !== undefined &&
+            memoryValueWritten !== undefined
+          ) {
+            const tr = this.#memoryTable.childNodes.item(memoryAddressWritten);
+            const td = tr.firstChild;
+            td.innerText = memoryValueWritten.toString();
+          }
+
+          this.#moveExecutionMarker(
+            this.#executionLineNumber + instructionPointerDiff
+          );
+        }
+
+        #reset() {
+          // in case the run animation is still going, cancel it
+          this.#stop();
+
+          this.#stackMachine.reset();
+          this.#stackMachine.load(this.#instructions);
+          this.#executionTerminated = false;
+          this.#renderEmptyStack();
+          this.#renderEmptyMemory();
+          this.#renderProgram();
+          this.#renderInstructionsIntoMemory();
+          this.#moveExecutionMarker(0);
+        }
+
+        #run() {
+          this.#runIntervalId = setInterval(
+            (() => {
+              this.#next();
+              if (this.#executionTerminated) this.#stop();
+            }).bind(this),
+            500
+          );
+
+          this.#runStopButton.innerText = "Stop";
+          this.#runStopButton.onclick = this.#stop.bind(this);
+        }
+
+        #stop() {
+          clearInterval(this.#runIntervalId);
+          this.#runIntervalId = null;
+
+          this.#runStopButton.innerText = "Run";
+          this.#runStopButton.onclick = this.#run.bind(this);
+        }
+
+        #renderProgram() {
+          this.#programContainer.innerHTML = "";
+
+          const elements = this.#parseTree.flatMap((node) => {
+            const marker = document.createElement("div");
+
+            const code = document.createElement("code");
+            code.innerText = node.code;
+
+            const comment = document.createElement("div");
+            comment.classList.add("comment");
+            comment.innerText = node.comment ?? "";
+
+            return [marker, code, comment];
+          });
+
+          this.#programContainer.append(...elements);
+          this.#moveExecutionMarker(0);
+        }
+
+        #moveExecutionMarker(lineNum) {
+          const oldMarkerIndex = this.#executionLineNumber * 3;
+          const newMarkerIndex = lineNum * 3;
+          if (
+            newMarkerIndex < 0 ||
+            this.#programContainer.childElementCount <= newMarkerIndex
+          )
+            return;
+
+          this.#programContainer.children[oldMarkerIndex].innerText = "";
+          this.#programContainer.children[newMarkerIndex].innerText = "➡️";
+
+          this.#executionLineNumber = lineNum;
+        }
+
+        #renderInstructionsIntoMemory() {
+          this.#instructions.forEach((memoryWord, index) => {
+            const tr = this.#memoryTable.children[index];
+            const td = tr.firstChild;
+            td.innerText = memoryWord.toString();
+          });
+        }
+      }
+
+      function toggleThoughts(e) {
+        if (e.key !== "?") return;
+
+        const thoughts = document.querySelectorAll("div.thought");
+
+        for (const thought of thoughts) {
+          const forElement = document.getElementById(
+            thought.getAttribute("for")
+          );
+          const { top, right, bottom, left } =
+            forElement.getBoundingClientRect();
+          const width = right - left;
+          const height = bottom - top;
+
+          thought.style.left = `calc(${left}px + var(--thought-margin))`;
+          thought.style.width = `calc(${width}px - 2 * (var(--thought-margin) + var(--thought-padding)))`;
+          thought.style.top = `calc(${top}px + var(--thought-margin))`;
+          thought.style.height = `calc(${height}px - 2 * (var(--thought-margin) + var(--thought-padding)))`;
+
+          thought.classList.toggle("show");
+        }
+      }
+
+      const initialProgram = `
+      pu
+      42
+      pu
+      0
+      ju`;
+      const controller = new Controller(initialProgram);
+
+      document
+        .querySelector("body")
+        .addEventListener("keydown", toggleThoughts);
+    </script>
+  </head>
+  <body>
+    <main>
+      <div class="thought" for="program">make comments align nicely</div>
+      <section id="program"></section>
+      <div class="thought" for="menu">some button spacing maybe?</div>
+      <section id="stack"></section>
+      <section id="memory">
+        <table></table>
+      </section>
+      <section id="menu">
+        <fieldset>
+          <legend>Play</legend>
+          <button id="next">Next Instruction</button>
+          <button id="run">Run</button>
+          <button id="reset">Reset</button>
+        </fieldset>
+        <fieldset>
+          <legend>Edit</legend>
+          <button id="edit">Edit Program</button>
+        </fieldset>
+      </section>
+      <dialog id="editor">
+        <form method="dialog">
+          <textarea></textarea>
+          <button class="cancel">Cancel</button>
+          <button class="submit" type="submit">Submit</button>
+        </form>
+      </dialog>
+    </main>
+  </body>
+</html>
